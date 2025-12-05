@@ -1,6 +1,6 @@
 [project]
 name = "ModelContainer"
-authors = ["BytePengwin"]
+authors = [{name = "BytePengwin"}]
 version = "0.1.0"
 description = "Simple container for langchain models"
 requires-python = ">=3.13"
