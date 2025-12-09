@@ -1,4 +1,4 @@
-# ModelContainer
+# ModelStash
 
 A Python wrapper for OpenAI-compatible APIs with cost tracking and async/sync support.
 
