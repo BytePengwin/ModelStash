@@ -2,12 +2,18 @@ import httpx
 from dataclasses import dataclass
 from typing import Iterator
 
+@dataclass
+class Metadata:
+    """Metadata for Message"""
+    input_tokens: int
+    output_tokens: int
+    cost: float
 
 @dataclass
 class Message:
     """Response message from API"""
     content: str
-    usage_metadata: dict
+    metadata: Metadata
 
 
 @dataclass
@@ -41,10 +47,11 @@ class Model:
 
         return Message(
             content=data["choices"][0]["message"]["content"],
-            usage_metadata={
-                "input_tokens": data["usage"]["prompt_tokens"],
-                "output_tokens": data["usage"]["completion_tokens"]
-            }
+            metadata=Metadata(
+                input_tokens= data["usage"]["prompt_tokens"],
+                output_tokens= data["usage"]["completion_tokens"],
+                cost = self.calculate_cost(data["usage"]["prompt_tokens"],data["usage"]["completion_tokens"])
+            )
         )
 
     def invoke(self, prompt: str) -> Message:
@@ -66,17 +73,17 @@ class Model:
 
         return Message(
             content=data["choices"][0]["message"]["content"],
-            usage_metadata={
-                "input_tokens": data["usage"]["prompt_tokens"],
-                "output_tokens": data["usage"]["completion_tokens"]
-            }
+            metadata=Metadata(
+                input_tokens= data["usage"]["prompt_tokens"],
+                output_tokens= data["usage"]["completion_tokens"],
+                cost = self.calculate_cost(data["usage"]["prompt_tokens"],data["usage"]["completion_tokens"])
+            )
         )
 
     def calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost for a request"""
         return (input_tokens / 1_000_000 * self.input_cost_per_1m +
                 output_tokens / 1_000_000 * self.output_cost_per_1m)
-
 
 class ModelContainer:
     """Container for managing multiple Model instances"""

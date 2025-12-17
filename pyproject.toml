@@ -1,7 +1,7 @@
 [project]
 name = "ModelStash"
 authors = [{name = "BytePengwin"}]
-version = "1.0.1"
+version = "1.1.0"
 description = "A Python wrapper for OpenAI-compatible APIs with cost tracking and async/sync support"
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
