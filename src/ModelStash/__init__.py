@@ -1,24 +1,32 @@
-import httpx
+import niquests
+import base64
 from dataclasses import dataclass
-from typing import Iterator
+from enum import Enum
+from typing import Iterator, Union
+
+
+class ImageType(str, Enum):
+    PNG = "image/png"
+    JPEG = "image/jpeg"
+    JPG = "image/jpg"
+    WEBP = "image/webp"
+    GIF = "image/gif"
+
 
 @dataclass
 class Metadata:
-    """Metadata for Message"""
     input_tokens: int
     output_tokens: int
     cost: float
 
+
 @dataclass
 class Message:
-    """Response message from API"""
     content: str
     metadata: Metadata
 
-
 @dataclass
 class Model:
-    """OpenAI-compatible API model"""
     model: str
     api_key: str
     base_url: str
@@ -28,83 +36,124 @@ class Model:
 
     ENDPOINT = "/chat/completions"
 
-    async def ainvoke(self, prompt: str) -> Message:
-        """Async invoke"""
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.temperature
+    def _build_message(
+        self,
+        prompt: str,
+        image_bytes: bytes | None = None,
+        *,
+        mime_type: Union[str, ImageType] = ImageType.PNG,
+    ) -> dict:
+        if image_bytes is None:
+            return {"role": "user", "content": prompt}
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        mime_str = mime_type.value if isinstance(mime_type, ImageType) else mime_type
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime_str};base64,{b64}"},
+                },
+            ],
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}{self.ENDPOINT}",
-                json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
-            response.raise_for_status()
-            data = response.json()
-
+    def _parse_response(self, data: dict) -> Message:
         return Message(
             content=data["choices"][0]["message"]["content"],
             metadata=Metadata(
-                input_tokens= data["usage"]["prompt_tokens"],
-                output_tokens= data["usage"]["completion_tokens"],
-                cost = self.calculate_cost(data["usage"]["prompt_tokens"],data["usage"]["completion_tokens"])
-            )
+                input_tokens=data["usage"]["prompt_tokens"],
+                output_tokens=data["usage"]["completion_tokens"],
+                cost=self.calculate_cost(
+                    data["usage"]["prompt_tokens"], data["usage"]["completion_tokens"]
+                ),
+            ),
         )
 
-    def invoke(self, prompt: str) -> Message:
-        """Sync invoke"""
+    async def ainvoke(
+        self,
+        prompt: str,
+        image_bytes: bytes | None = None,
+        *,
+        mime_type: Union[str, ImageType] = ImageType.PNG,
+    ) -> Message:
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": self.temperature
+            "messages": [self._build_message(prompt, image_bytes, mime_type=mime_type)],
+            "temperature": self.temperature,
         }
-
-        with httpx.Client() as client:
-            response = client.post(
+        async with niquests.AsyncSession() as session:
+            r = await session.post(
                 f"{self.base_url}{self.ENDPOINT}",
                 json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"}
+                headers={"Authorization": f"Bearer {self.api_key}"},
             )
-            response.raise_for_status()
-            data = response.json()
+            r.raise_for_status()
+            return self._parse_response(r.json())
 
-        return Message(
-            content=data["choices"][0]["message"]["content"],
-            metadata=Metadata(
-                input_tokens= data["usage"]["prompt_tokens"],
-                output_tokens= data["usage"]["completion_tokens"],
-                cost = self.calculate_cost(data["usage"]["prompt_tokens"],data["usage"]["completion_tokens"])
+    def invoke(
+        self,
+        prompt: str,
+        image_bytes: bytes | None = None,
+        *,
+        mime_type: Union[str, ImageType] = ImageType.PNG,
+    ) -> Message:
+        payload = {
+            "model": self.model,
+            "messages": [self._build_message(prompt, image_bytes, mime_type=mime_type)],
+            "temperature": self.temperature,
+        }
+        with niquests.Session() as session:
+            r = session.post(
+                f"{self.base_url}{self.ENDPOINT}",
+                json=payload,
+                headers={"Authorization": f"Bearer {self.api_key}"},
             )
-        )
+            r.raise_for_status()
+            return self._parse_response(r.json())
 
     def calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        """Calculate cost for a request"""
-        return (input_tokens / 1_000_000 * self.input_cost_per_1m +
-                output_tokens / 1_000_000 * self.output_cost_per_1m)
+        return (
+            input_tokens / 1_000_000 * self.input_cost_per_1m
+            + output_tokens / 1_000_000 * self.output_cost_per_1m
+        )
+
 
 class ModelContainer:
-    """Container for managing multiple Model instances"""
-    
     def __init__(self, api_key: str, base_url: str = "https://openrouter.ai/api/v1"):
         self.api_key = api_key
         self.base_url = base_url
+        self._models: dict[str, Model] = {}
+
+    def __getattr__(self, name: str) -> Model:
+        if name.startswith("_"):
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+        if name in self._models:
+            return self._models[name]
+        raise AttributeError(
+            f"'{type(self).__name__}' object has no model named '{name}'"
+        )
 
     def __iter__(self) -> Iterator[Model]:
-        for name, value in self.__dict__.items():
-            if isinstance(value, Model):
-                yield value
+        return iter(self._models.values())
 
-    def add(self, name: str, model_name: str, input_cost: float, output_cost: float,
-            temperature: float = 0) -> None:
-        client = Model(
+    def add(
+        self,
+        name: str,
+        model_name: str,
+        input_cost: float,
+        output_cost: float,
+        temperature: float = 0,
+    ) -> Model:
+        model = Model(
             model=model_name,
             api_key=self.api_key,
             base_url=self.base_url,
             input_cost_per_1m=input_cost,
             output_cost_per_1m=output_cost,
-            temperature=temperature
+            temperature=temperature,
         )
-        setattr(self, name, client)
+        self._models[name] = model
+        return model

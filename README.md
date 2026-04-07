@@ -1,73 +1,143 @@
 # ModelStash
 
-A Python wrapper for OpenAI-compatible APIs with cost tracking and async/sync support.
+A lightweight Python library for managing and invoking multiple AI models with built-in cost tracking and token counting.
 
-**Status:** Maintenance Mode - No new features planned.
+
+Status: Maintenance Mode - No new features planned.
 
 ## Features
 
-- **Async & Sync**: Both `ainvoke()` and `invoke()` methods
-- **Cost Tracking**: Built-in cost calculation based on token usage
-- **Model Management**: Container class to manage multiple models
-- **OpenAI Compatible**: Works with OpenAI, OpenRouter, and other compatible APIs
+- **Multi-model management** - Register and switch between multiple AI models via `ModelContainer`
+- **Sync & async support** - Use `invoke()` for synchronous calls or `ainvoke()` for async
+- **Vision support** - Pass images to models that support multimodal inputs
+- **Cost tracking** - Automatic token counting and cost calculation per request
+- **OpenRouter compatible** - Works with any OpenAI-compatible API endpoint
 
 ## Installation
 
-```python
-pip install modelcontainer
+```bash
+pip install ModelStash
 ```
 
 ## Quick Start
 
-### Single Model
-
 ```python
-from __init__ import Model
-
-model = Model(
-    model="gpt-4",
-    api_key="your-api-key",
-    base_url="https://openrouter.io/api/v1",
-    input_cost_per_1m=0.03,
-    output_cost_per_1m=0.06
-)
-
-response = model.invoke("What is 2+2?")
-print(response.content)
-```
-
-### Multiple Models
-
-```python
-from __init__ import ModelContainer
+from ModelStash import ModelContainer, ImageType
 
 container = ModelContainer(api_key="your-api-key")
 
-container.add("gpt4", "gpt-4", input_cost=0.03, output_cost=0.06)
-container.add("gpt35", "gpt-3.5-turbo", input_cost=0.0005, output_cost=0.0015)
+container.add(
+    name="flash",
+    model_name="google/gemini-2.0-flash-001",
+    input_cost=0.0,
+    output_cost=0.0,
+)
 
-for model in container:
-    response = model.invoke("Hello!")
-    print(response.content)
+result = container.flash.invoke("Hello, world!")
+print(result.content)
+print(f"Cost: ${result.metadata.cost:.6f}")
 ```
 
 ## API Reference
 
-### Model
-
-**Methods:**
-- `invoke(prompt: str) -> Message` - Synchronous API call
-- `ainvoke(prompt: str) -> Message` - Asynchronous API call
-- `calculate_cost(input_tokens: int, output_tokens: int) -> float` - Calculate request cost
-
 ### ModelContainer
 
-**Methods:**
-- `add(name, model_name, input_cost, output_cost, temperature=0)` - Add a model
-- `__iter__()` - Iterate over all models
+Manages a collection of models and their HTTP clients.
+
+```python
+container = ModelContainer(api_key="...", base_url="https://openrouter.ai/api/v1")
+```
+
+| Method | Description |
+|--------|-------------|
+| `add(name, model_name, input_cost, output_cost, temperature=0)` | Register a new model |
+| `get(model_name)` | Get a model by name (via `__getattr__`) |
+
+### Model
+
+Represents a single model configuration.
+
+```python
+model = container.add("name", "model-id", input_cost=0.0, output_cost=0.0)
+```
+
+| Method | Description |
+|--------|-------------|
+| `invoke(prompt, image_bytes=None, mime_type=ImageType.PNG)` | Synchronous call |
+| `ainvoke(prompt, image_bytes=None, mime_type=ImageType.PNG)` | Async call |
+| `calculate_cost(input_tokens, output_tokens)` | Calculate cost for tokens |
 
 ### Message
 
-**Attributes:**
-- `content: str` - Response text
-- `usage_metadata: dict` - Token counts and usage info
+Returned by model invocations.
+
+```python
+@dataclass
+class Message:
+    content: str        # Model's response text
+    metadata: Metadata  # Token usage and cost info
+```
+
+### Metadata
+
+Token usage and cost data.
+
+```python
+@dataclass
+class Metadata:
+    input_tokens: int   # Prompt tokens used
+    output_tokens: int  # Completion tokens used
+    cost: float         # Total cost in USD
+```
+
+### ImageType
+
+Supported image MIME types:
+
+- `ImageType.PNG`
+- `ImageType.JPEG`
+- `ImageType.JPG`
+- `ImageType.WEBP`
+- `ImageType.GIF`
+
+## Examples
+
+### Async Usage
+
+```python
+import asyncio
+from ModelStash import ModelContainer
+
+async def main():
+    container = ModelContainer(api_key="...")
+    container.add("flash", "google/gemini-2.0-flash-001", 0.0, 0.0)
+    
+    result = await container.flash.ainvoke("What is this?")
+    print(result.content)
+    
+    container.close()
+
+asyncio.run(main())
+```
+
+### With Image Input
+
+```python
+from ModelStash import ModelContainer, ImageType
+
+container = ModelContainer(api_key="...")
+container.add("vision", "google/gemini-2.0-flash-001", 0.0, 0.0)
+
+with open("image.png", "rb") as f:
+    image_bytes = f.read()
+
+result = container.vision.invoke(
+    "Describe this image",
+    image_bytes=image_bytes,
+    mime_type=ImageType.PNG,
+)
+```
+
+## License
+
+MIT

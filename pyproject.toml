@@ -1,7 +1,7 @@
 [project]
 name = "ModelStash"
 authors = [{name = "BytePengwin"}]
-version = "1.1.0"
+version = "2.0.1"
 description = "A Python wrapper for OpenAI-compatible APIs with cost tracking and async/sync support"
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
@@ -16,7 +16,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "httpx>=0.28.1",
+    "niquests[rtls,speedups]>=3.18.4",
 ]
 
 [project.urls]
