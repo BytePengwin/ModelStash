@@ -1,8 +1,9 @@
-import niquests
 import base64
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterator, Union
+from typing import Iterator
+
+import niquests
 
 
 class ImageType(str, Enum):
@@ -11,6 +12,12 @@ class ImageType(str, Enum):
     JPG = "image/jpg"
     WEBP = "image/webp"
     GIF = "image/gif"
+
+
+class Role(str, Enum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
 
 
 @dataclass
@@ -25,6 +32,34 @@ class Message:
     content: str
     metadata: Metadata
 
+
+@dataclass
+class SystemMessage:
+    content: str
+
+
+@dataclass
+class UserMessage:
+    content: str
+    images: (
+        tuple[bytes, str | ImageType]
+        | tuple[str | ImageType, bytes]
+        | list[tuple[bytes, str | ImageType] | tuple[str | ImageType, bytes]]
+        | None
+    ) = None
+
+
+@dataclass
+class AssistantMessage:
+    content: str
+    images: (
+        tuple[bytes, str | ImageType]
+        | tuple[str | ImageType, bytes]
+        | list[tuple[bytes, str | ImageType] | tuple[str | ImageType, bytes]]
+        | None
+    ) = None
+
+
 @dataclass
 class Model:
     model: str
@@ -36,27 +71,56 @@ class Model:
 
     ENDPOINT = "/chat/completions"
 
-    def _build_message(
-        self,
-        prompt: str,
-        image_bytes: bytes | None = None,
-        *,
-        mime_type: Union[str, ImageType] = ImageType.PNG,
-    ) -> dict:
-        if image_bytes is None:
-            return {"role": "user", "content": prompt}
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        mime_str = mime_type.value if isinstance(mime_type, ImageType) else mime_type
-        return {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
+    @staticmethod
+    def _build_image_content(
+        images: tuple[bytes, str | ImageType]
+        | tuple[str | ImageType, bytes]
+        | list[tuple[bytes, str | ImageType] | tuple[str | ImageType, bytes]],
+    ) -> list[dict]:
+        if isinstance(images, tuple):
+            images = [images]
+
+        result = []
+        for item in images:
+            data, mime = item if isinstance(item[0], bytes) else (item[1], item[0])
+            mime_str = mime.value if isinstance(mime, ImageType) else mime
+            b64 = base64.b64encode(data).decode("utf-8")
+            result.append(
                 {
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime_str};base64,{b64}"},
-                },
-            ],
-        }
+                }
+            )
+        return result
+
+    @staticmethod
+    def _normalize_messages(
+        messages: list[dict | SystemMessage | UserMessage | AssistantMessage],
+    ) -> list[dict]:
+        result = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                result.append(msg)
+                continue
+
+            if isinstance(msg, SystemMessage):
+                result.append({"role": Role.SYSTEM, "content": msg.content})
+                continue
+
+            result.append(
+                {
+                    "role": Role.USER
+                    if isinstance(msg, UserMessage)
+                    else Role.ASSISTANT,
+                    "content": [
+                        {"type": "text", "text": msg.content},
+                        *Model._build_image_content(msg.images),
+                    ]
+                    if msg.images
+                    else msg.content,
+                }
+            )
+        return result
 
     def _parse_response(self, data: dict) -> Message:
         return Message(
@@ -70,20 +134,26 @@ class Model:
             ),
         )
 
-    async def ainvoke(
-        self,
-        prompt: str,
-        image_bytes: bytes | None = None,
-        *,
-        mime_type: Union[str, ImageType] = ImageType.PNG,
-    ) -> Message:
-        payload = {
+    def _build_payload(self, messages: list[dict]) -> dict:
+        return {
             "model": self.model,
-            "messages": [self._build_message(prompt, image_bytes, mime_type=mime_type)],
+            "messages": messages,
             "temperature": self.temperature,
         }
-        async with niquests.AsyncSession() as session:
-            r = await session.post(
+
+    def invoke(
+        self,
+        prompt: str | list[dict | SystemMessage | UserMessage | AssistantMessage],
+    ) -> Message:
+        messages = (
+            [{"role": Role.USER, "content": prompt}]
+            if isinstance(prompt, str)
+            else self._normalize_messages(prompt)
+        )
+
+        payload = self._build_payload(messages)
+        with niquests.Session() as session:
+            r = session.post(
                 f"{self.base_url}{self.ENDPOINT}",
                 json=payload,
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -91,20 +161,19 @@ class Model:
             r.raise_for_status()
             return self._parse_response(r.json())
 
-    def invoke(
+    async def ainvoke(
         self,
-        prompt: str,
-        image_bytes: bytes | None = None,
-        *,
-        mime_type: Union[str, ImageType] = ImageType.PNG,
+        prompt: str | list[dict | SystemMessage | UserMessage | AssistantMessage],
     ) -> Message:
-        payload = {
-            "model": self.model,
-            "messages": [self._build_message(prompt, image_bytes, mime_type=mime_type)],
-            "temperature": self.temperature,
-        }
-        with niquests.Session() as session:
-            r = session.post(
+        messages = (
+            [{"role": Role.USER, "content": prompt}]
+            if isinstance(prompt, str)
+            else self._normalize_messages(prompt)
+        )
+
+        payload = self._build_payload(messages)
+        async with niquests.AsyncSession() as session:
+            r = await session.post(
                 f"{self.base_url}{self.ENDPOINT}",
                 json=payload,
                 headers={"Authorization": f"Bearer {self.api_key}"},
@@ -117,6 +186,138 @@ class Model:
             input_tokens / 1_000_000 * self.input_cost_per_1m
             + output_tokens / 1_000_000 * self.output_cost_per_1m
         )
+
+    def chat(
+        self,
+        initial_messages: list[dict | SystemMessage | UserMessage | AssistantMessage]
+        | None = None,
+    ) -> "ChatSession":
+        return ChatSession(self, initial_messages)
+
+    def achat(
+        self,
+        initial_messages: list[dict | SystemMessage | UserMessage | AssistantMessage]
+        | None = None,
+    ) -> "AsyncChatSession":
+        return AsyncChatSession(self, initial_messages)
+
+
+class ChatSession:
+    def __init__(
+        self,
+        model: Model,
+        initial_messages: list[dict | SystemMessage | UserMessage | AssistantMessage]
+        | None = None,
+    ):
+        self._model = model
+        self.history: list[dict] = (
+            Model._normalize_messages(initial_messages) if initial_messages else []
+        )
+
+    def send(
+        self,
+        prompt: str,
+        images: (
+            tuple[bytes, str | ImageType]
+            | tuple[str | ImageType, bytes]
+            | list[tuple[bytes, str | ImageType] | tuple[str | ImageType, bytes]]
+            | None
+        ) = None,
+    ) -> Message:
+        content = (
+            [
+                {"type": "text", "text": prompt},
+                *Model._build_image_content(images),
+            ]
+            if images
+            else prompt
+        )
+
+        payload = self._model._build_payload(
+            [*self.history, {"role": Role.USER, "content": content}]
+        )
+
+        with niquests.Session() as session:
+            r = session.post(
+                f"{self._model.base_url}{self._model.ENDPOINT}",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._model.api_key}"},
+            )
+            r.raise_for_status()
+            response = self._model._parse_response(r.json())
+
+        self.history.extend(
+            [
+                {"role": Role.USER, "content": content},
+                {"role": Role.ASSISTANT, "content": response.content},
+            ]
+        )
+        return response
+
+    def __enter__(self) -> "ChatSession":
+        return self
+
+    def __exit__(self, *_) -> None:
+        pass
+
+
+class AsyncChatSession:
+    def __init__(
+        self,
+        model: Model,
+        initial_messages: list[dict | SystemMessage | UserMessage | AssistantMessage]
+        | None = None,
+    ):
+        self._model = model
+        self.history: list[dict] = (
+            Model._normalize_messages(initial_messages) if initial_messages else []
+        )
+
+    async def send(
+        self,
+        prompt: str,
+        images: (
+            tuple[bytes, str | ImageType]
+            | tuple[str | ImageType, bytes]
+            | list[tuple[bytes, str | ImageType] | tuple[str | ImageType, bytes]]
+            | None
+        ) = None,
+    ) -> Message:
+        content = (
+            [
+                {"type": "text", "text": prompt},
+                *Model._build_image_content(images),
+            ]
+            if images
+            else prompt
+        )
+
+        payload = self._model._build_payload(
+            [*self.history, {"role": Role.USER, "content": content}]
+        )
+
+        async with niquests.AsyncSession() as session:
+            r = await session.post(
+                f"{self._model.base_url}{self._model.ENDPOINT}",
+                json=payload,
+                headers={"Authorization": f"Bearer {self._model.api_key}"},
+            )
+            r.raise_for_status()
+            response = self._model._parse_response(r.json())
+
+        self.history.extend(
+            [
+                {"role": Role.USER, "content": content},
+                {"role": Role.ASSISTANT, "content": response.content},
+            ]
+        )
+        return response
+
+    async def __aenter__(self) -> "AsyncChatSession":
+        return self
+
+    async def __aexit__(self, *_) -> None:
+        pass
 
 
 class ModelContainer:
@@ -147,7 +348,7 @@ class ModelContainer:
         output_cost: float,
         temperature: float = 0,
     ) -> Model:
-        model = Model(
+        self._models[name] = Model(
             model=model_name,
             api_key=self.api_key,
             base_url=self.base_url,
@@ -155,5 +356,4 @@ class ModelContainer:
             output_cost_per_1m=output_cost,
             temperature=temperature,
         )
-        self._models[name] = model
-        return model
+        return self._models[name]
